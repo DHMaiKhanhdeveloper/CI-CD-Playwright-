@@ -12,27 +12,51 @@ permissions:
 jobs:
   comment:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.event == 'pull_request' }}
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: playwright-report-merged
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
       
-      - name: Comment PR
+      - name: Comment PR or Create Summary
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
             const conclusion = '${{ github.event.workflow_run.conclusion }}';
             const emoji = conclusion === 'success' ? '✅' : '❌';
+            const eventType = '${{ github.event.workflow_run.event }}';
+            const message = `${emoji} **Playwright Tests ${conclusion}**\n\n[View detailed report](https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }})`;
             
-            github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `${emoji} **Playwright Tests ${conclusion}**\n\n[View detailed report](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${{ github.event.workflow_run.id }})`
-            });
+            // Only comment on PR if it's a pull_request event
+            if (eventType === 'pull_request') {
+              const pullRequests = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                head: '${{ github.event.workflow_run.head_branch }}'
+              });
+              
+              if (pullRequests.data.length > 0) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pullRequests.data[0].number,
+                  body: message
+                });
+                console.log('✅ Comment added to PR #' + pullRequests.data[0].number);
+              } else {
+                console.log('⚠️ No open PR found for branch: ${{ github.event.workflow_run.head_branch }}');
+              }
+            } else {
+              // For push events, just log the result
+              console.log(`📝 Test Results for ${eventType} event:`);
+              console.log(message);
+              core.summary
+                .addHeading('Playwright Test Results')
+                .addRaw(message)
+                .write();
+            }
 
